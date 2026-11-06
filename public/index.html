@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#111318">
+  <title>Manga-scan</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a href="#/" class="logo">Manga<span>scan</span></a>
+    <form id="search" class="search" role="search">
+      <input id="q" type="search" placeholder="Rechercher un manga…" autocomplete="off">
+    </form>
+    <select id="lang" title="Langue des chapitres">
+      <option value="fr">FR</option>
+      <option value="en">EN</option>
+      <option value="es-la">ES</option>
+      <option value="pt-br">PT</option>
+      <option value="it">IT</option>
+      <option value="de">DE</option>
+    </select>
+  </header>
+  <main id="app"></main>
+  <script src="/app.js"></script>
+</body>
+</html>
