@@ -22,6 +22,7 @@ function toggleFav(m) {
 
 // ---------- Utilitaires ----------
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const saverOn = () => store.get('saver', true); // pages allégées par défaut : 3 à 5 fois plus légères
 const STATUS = { ongoing: 'En cours', completed: 'Terminé', hiatus: 'En pause', cancelled: 'Annulé' };
 const chLabel = (c) => (c.chapter ? `Chapitre ${c.chapter}` : 'Oneshot') + (c.title ? ` — ${c.title}` : '');
 const coverImg = (src) => (src ? `<img loading="lazy" src="${esc(src)}" alt="" onload="this.classList.add('ok')">` : '');
@@ -83,17 +84,17 @@ async function getManga(id) {
 }
 
 async function viewManga(id) {
-  $app.innerHTML = '<div class="grid" style="margin-top:20px">' + skeletons(6) + '</div>';
-  let m;
-  try { m = await getManga(id); } catch (e) { $app.innerHTML = errorBox(e); return; }
-  document.title = m.title + ' — Manga-scan';
+  // Affichage immédiat avec ce qu'on connaît déjà (liste, favoris, historique), chapitres ensuite.
+  const quick = MangaDex.summary(id) || favs()[id] || history()[id];
+  let m = quick ? { tags: [], ...quick, chapters: null } : null;
   const read = readSet();
   const hist = history()[id];
-  const first = m.chapters[0];
   let desc = true; // ordre décroissant par défaut
   const render = () => {
+    document.title = m.title + ' — Manga-scan';
     const isFav = !!favs()[id];
-    const list = desc ? [...m.chapters].reverse() : m.chapters;
+    const first = m.chapters && m.chapters[0];
+    const list = !m.chapters ? [] : desc ? [...m.chapters].reverse() : m.chapters;
     $app.innerHTML = `
       <div class="hero">
         ${m.cover ? `<div class="bg" style="background-image:url('${esc(m.cover)}')"></div>` : ''}
@@ -112,9 +113,9 @@ async function viewManga(id) {
             <button class="btn" id="fav">${isFav ? '★ Favori' : '☆ Favori'}</button>
           </div>
           ${m.description ? `<div class="desc" id="desc">${esc(m.description)}</div>` : ''}
-      <div class="chhead"><h2>${m.chapters.length} chapitres <span class="meta">(${esc(lang.toUpperCase())})</span></h2>
+      <div class="chhead"><h2>${m.chapters ? m.chapters.length : '…'} chapitres <span class="meta">(${esc(lang.toUpperCase())})</span></h2>
         <button class="btn" id="order">${desc ? '↓ Récents' : '↑ Anciens'}</button></div>
-      ${m.chapters.length ? `<ul class="chapters">${list.map((c) => `
+      ${!m.chapters ? `<ul class="chapters">${'<li class="skel"><a><span class="t" style="width:40%"></span></a></li>'.repeat(8)}</ul>` : m.chapters.length ? `<ul class="chapters">${list.map((c) => `
         <li><a href="#/read/${id}/${c.id}" class="${read[c.id] ? 'read' : ''}">
           <span class="name">${esc(chLabel(c))}</span>
           <small>${c.volume ? `Vol. ${esc(c.volume)}<br>` : ''}${c.publishedAt ? new Date(c.publishedAt).toLocaleDateString('fr-FR') : ''}</small>
@@ -124,7 +125,16 @@ async function viewManga(id) {
     document.getElementById('order').onclick = () => { desc = !desc; render(); };
     const d = document.getElementById('desc'); if (d) d.onclick = () => d.classList.toggle('open');
   };
+  if (m) render(); else $app.innerHTML = '<div class="grid" style="margin-top:20px">' + skeletons(6) + '</div>';
+  const here = location.hash;
+  let full;
+  try { full = await getManga(id); } catch (e) { if (location.hash === here) $app.innerHTML = errorBox(e); return; }
+  if (location.hash !== here) return; // l'utilisateur est parti entre-temps
+  m = full;
   render();
+  // Le chapitre le plus probable (reprise ou premier) est préchargé pour une ouverture instantanée.
+  const likely = (hist && hist.chapterId) || (m.chapters[0] && m.chapters[0].id);
+  if (likely) MangaDex.prefetchChapter(likely, saverOn());
 }
 
 // ---------- Lecteur ----------
@@ -134,7 +144,7 @@ async function viewReader(mangaId, chapterId) {
   $app.innerHTML = '<p class="msg" style="padding-top:40vh">Chargement du chapitre…</p>';
   let m, pages;
   try {
-    [m, pages] = await Promise.all([getManga(mangaId), MangaDex.getPages(chapterId, store.get('saver', false))]);
+    [m, pages] = await Promise.all([getManga(mangaId), MangaDex.getPages(chapterId, saverOn())]);
   } catch (e) { $app.innerHTML = errorBox(e) + '<p class="msg"><a class="btn" href="#/manga/' + esc(mangaId) + '">Retour</a></p>'; return; }
   const idx = m.chapters.findIndex((c) => c.id === chapterId);
   const ch = m.chapters[idx] || { id: chapterId, chapter: null };
@@ -158,6 +168,7 @@ async function viewReader(mangaId, chapterId) {
       <a class="btn" href="#/manga/${mangaId}" title="Retour">←</a>
       <div class="ttl"><b>${esc(m.title)}</b>
       <select id="chsel">${m.chapters.map((c) => `<option value="${c.id}" ${c.id === chapterId ? 'selected' : ''}>${esc(chLabel(c))}</option>`).join('')}</select></div>
+      <button class="btn" id="hd" title="Qualité des images">${saverOn() ? 'SD' : 'HD'}</button>
       <button class="btn" id="mode" title="Mode de lecture">${mode === 'vertical' ? '⇕' : '⇔'}</button>
     </div>${body}`;
   const endnav = `<div class="endnav">
@@ -211,13 +222,16 @@ async function viewReader(mangaId, chapterId) {
       show();
     }
     document.getElementById('chsel').onchange = (e) => go({ id: e.target.value });
+    document.getElementById('hd').onclick = () => { store.set('saver', !saverOn()); viewReader(mangaId, chapterId); };
     document.getElementById('mode').onclick = () => { mode = mode === 'vertical' ? 'paged' : 'vertical'; store.set('mode', mode); render(); };
     const pv = document.getElementById('prevch'), nx = document.getElementById('nextch');
     if (pv) pv.onclick = () => go(prev);
     if (nx) nx.onclick = () => go(next);
   };
   render();
-  readerCleanup = () => cleanups.forEach((f) => f());
+  // Chapitre suivant téléchargé en arrière-plan pendant la lecture.
+  const pre = next ? setTimeout(() => MangaDex.prefetchChapter(next.id, saverOn(), 6), 2500) : null;
+  readerCleanup = () => { clearTimeout(pre); cleanups.forEach((f) => f()); };
 }
 
 // Les serveurs d'images MangaDex@Home tombent parfois : on réessaie une fois avec un délai.
@@ -240,6 +254,14 @@ function route() {
   return viewHome();
 }
 addEventListener('hashchange', route);
+// Préchargement dès que le doigt touche une carte ou un chapitre (~100-300 ms gagnées avant le clic).
+document.addEventListener('pointerdown', (e) => {
+  const a = e.target.closest && e.target.closest('a[href^="#/"]');
+  if (!a) return;
+  const [, kind, id, ch] = a.getAttribute('href').split('/');
+  if (kind === 'manga' && id) getManga(id).catch(() => {});
+  if (kind === 'read' && ch) { getManga(id).catch(() => {}); MangaDex.prefetchChapter(ch, saverOn()); }
+}, { passive: true });
 document.getElementById('search').onsubmit = (e) => {
   e.preventDefault();
   const q = $q.value.trim();

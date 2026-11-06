@@ -9,19 +9,58 @@
   const img = (url) => (NATIVE ? url : '/img?u=' + encodeURIComponent(url));
 
   const RATINGS = ['safe', 'suggestive'];
-  const cache = new Map();
+  const mem = new Map();       // url -> { data, at }
+  const inflight = new Map();  // url -> Promise (évite les requêtes en double, ex. préchargement)
 
-  async function get(path, params, ttl = 5 * 60 * 1000) {
+  // Cache persistant (survit à la fermeture de l'app) pour un affichage instantané.
+  const PKEY = 'mdx-cache-v1', PMAX = 40, STALE_MAX = 7 * 24 * 3600 * 1000;
+  let disk = {};
+  try { disk = JSON.parse(localStorage.getItem(PKEY)) || {}; } catch {}
+  let saveTimer = null;
+  function persist(url, entry) {
+    disk[url] = entry;
+    const keys = Object.keys(disk);
+    if (keys.length > PMAX) keys.sort((a, b) => disk[a].at - disk[b].at).slice(0, keys.length - PMAX).forEach((k) => delete disk[k]);
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(flush, 300);
+  }
+  function flush() {
+    clearTimeout(saveTimer);
+    try { localStorage.setItem(PKEY, JSON.stringify(disk)); }
+    catch { disk = {}; try { localStorage.removeItem(PKEY); } catch {} }
+  }
+  // Sauvegarde aussi quand l'app passe en arrière-plan ou se ferme.
+  addEventListener('pagehide', flush);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) flush(); });
+
+  // Stratégie « stale-while-revalidate » : une donnée en cache est renvoyée immédiatement ;
+  // si elle a plus de `ttl`, elle est rafraîchie en arrière-plan pour la prochaine fois.
+  async function get(path, params, ttl = 10 * 60 * 1000, keep = true) {
     const q = new URLSearchParams();
     for (const [k, v] of params || []) q.append(k, v);
     const url = API + path + (params ? '?' + q : '');
-    const hit = cache.get(url);
-    if (hit && hit.exp > Date.now()) return hit.data;
+    const hit = mem.get(url) || (keep && disk[url]);
+    const age = hit ? Date.now() - hit.at : Infinity;
+    if (hit && age < ttl) return hit.data;
+    if (hit && keep && age < STALE_MAX) { fetchJson(url, keep).catch(() => {}); return hit.data; }
+    return fetchJson(url, keep);
+  }
+
+  function fetchJson(url, keep) {
+    if (inflight.has(url)) return inflight.get(url);
+    const p = doFetch(url, keep).finally(() => inflight.delete(url));
+    inflight.set(url, p);
+    return p;
+  }
+
+  async function doFetch(url, keep) {
     const { status, data } = NATIVE ? await nativeGet(url) : await webGet(url);
     if (status === 429) throw new Error('MangaDex limite les requêtes : réessayez dans quelques secondes.');
     if (status < 200 || status >= 300) throw new Error(`MangaDex a répondu ${status}.`);
     if (!data || typeof data !== 'object') throw new Error('Réponse inattendue de MangaDex.');
-    cache.set(url, { data, exp: Date.now() + ttl });
+    const entry = { data, at: Date.now() };
+    mem.set(url, entry);
+    if (keep) persist(url, entry);
     return data;
   }
 
@@ -79,24 +118,36 @@
     else if (sort === 'rating') p.push(['order[rating]', 'desc']);
     else p.push(['order[followedCount]', 'desc']);
     const data = await get('/manga', p);
-    return { total: data.total, items: data.data.map((m) => simplify(m, lang)) };
+    const items = data.data.map((m) => simplify(m, lang));
+    items.forEach((m) => known.set(m.id, m));
+    return { total: data.total, items };
   }
 
+  const known = new Map(); // résumés déjà vus dans les listes : affichage immédiat de la fiche
+  const summary = (id) => known.get(id) || null;
+
+  const feedPage = (id, lang, offset) => {
+    const p = [['limit', '500'], ['offset', String(offset)], ['translatedLanguage[]', lang], ['order[volume]', 'asc'], ['order[chapter]', 'asc']];
+    for (const r of [...RATINGS, 'erotica', 'pornographic']) p.push(['contentRating[]', r]);
+    return get(`/manga/${id}/feed`, p);
+  };
+
   async function getManga(id, lang) {
-    const data = await get(`/manga/${id}`, [['includes[]', 'cover_art'], ['includes[]', 'author']]);
+    // Fiche et premier lot de chapitres en parallèle.
+    const [data, first] = await Promise.all([get(`/manga/${id}`, [['includes[]', 'cover_art'], ['includes[]', 'author']], 60 * 60 * 1000), feedPage(id, lang, 0)]);
     const manga = simplify(data.data, lang);
+    known.set(id, manga);
+    const feeds = [first];
+    if (first.total > 500) {
+      const offsets = [];
+      for (let o = 500; o < Math.min(first.total, 10000); o += 500) offsets.push(o);
+      feeds.push(...(await Promise.all(offsets.map((o) => feedPage(id, lang, o)))));
+    }
     const chapters = [];
-    for (let offset = 0; offset < 10000; offset += 500) {
-      const p = [['limit', '500'], ['offset', String(offset)], ['translatedLanguage[]', lang], ['order[volume]', 'asc'], ['order[chapter]', 'asc'], ['includes[]', 'scanlation_group']];
-      for (const r of [...RATINGS, 'erotica', 'pornographic']) p.push(['contentRating[]', r]);
-      const feed = await get(`/manga/${id}/feed`, p);
-      for (const c of feed.data) {
-        const a = c.attributes;
-        if (a.externalUrl || a.pages === 0) continue; // chapitres hébergés ailleurs : illisibles ici
-        const g = (c.relationships || []).find((r) => r.type === 'scanlation_group');
-        chapters.push({ id: c.id, chapter: a.chapter, volume: a.volume, title: a.title, publishedAt: a.publishAt, group: g && g.attributes ? g.attributes.name : null });
-      }
-      if (offset + 500 >= feed.total) break;
+    for (const feed of feeds) for (const c of feed.data) {
+      const a = c.attributes;
+      if (a.externalUrl || a.pages === 0) continue; // chapitres hébergés ailleurs : illisibles ici
+      chapters.push({ id: c.id, chapter: a.chapter, volume: a.volume, title: a.title, publishedAt: a.publishAt });
     }
     const seen = new Set();
     manga.chapters = chapters.filter((c) => { const k = c.chapter == null ? c.id : c.chapter; if (seen.has(k)) return false; seen.add(k); return true; });
@@ -105,11 +156,24 @@
   }
 
   async function getPages(chapterId, saver) {
-    const d = await get(`/at-home/server/${chapterId}`, null, 60 * 1000); // URLs à durée de vie courte
-    const files = saver ? d.chapter.dataSaver : d.chapter.data;
-    const dir = saver ? 'data-saver' : 'data';
+    const d = await get(`/at-home/server/${chapterId}`, null, 5 * 60 * 1000, false); // URLs temporaires : jamais sur disque
+    const light = saver && d.chapter.dataSaver && d.chapter.dataSaver.length > 0;
+    const files = light ? d.chapter.dataSaver : d.chapter.data;
+    const dir = light ? 'data-saver' : 'data';
     return files.map((f) => img(`${d.baseUrl}/${dir}/${d.chapter.hash}/${f}`));
   }
 
-  window.MangaDex = { listManga, getManga, getPages, NATIVE };
+  // Télécharge à l'avance les premières pages d'un chapitre (cache HTTP du WebView).
+  const warmed = new Set();
+  async function prefetchChapter(chapterId, saver, count = 4) {
+    const key = chapterId + saver;
+    if (warmed.has(key)) return;
+    warmed.add(key);
+    try {
+      const pages = await getPages(chapterId, saver);
+      pages.slice(0, count).forEach((src) => { const im = new Image(); im.decoding = 'async'; im.src = src; });
+    } catch { warmed.delete(key); }
+  }
+
+  window.MangaDex = { listManga, getManga, getPages, prefetchChapter, summary, NATIVE };
 })();
