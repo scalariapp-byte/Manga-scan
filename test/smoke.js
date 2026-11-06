@@ -38,27 +38,27 @@ function startMock() {
   const mock = await startMock();
   const host = `127.0.0.1:${mock.address().port}`;
   process.env.MANGADEX_API = `http://${host}`;
-  process.env.MANGADEX_COVERS = `http://${host}`;
   process.env.EXTRA_IMAGE_HOSTS = host;
   const server = require('../server');
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
   const get = async (p) => { const r = await fetch(base + p); return { status: r.status, type: r.headers.get('content-type'), body: r.headers.get('content-type')?.includes('json') ? await r.json() : await r.text() }; };
 
-  let r = await get('/api/manga?lang=fr');
+  let r = await get('/mdx/manga?limit=1');
   assert.equal(r.status, 200);
-  assert.equal(r.body.items[0].title, 'Manga de test');
-  assert.ok(r.body.items[0].cover.startsWith('/img?u='));
+  assert.equal(r.body.data[0].id, MID);
 
-  r = await get(`/api/manga/${MID}?lang=fr`);
-  assert.equal(r.status, 200);
-  assert.deepEqual(r.body.chapters.map((c) => c.chapter), ['1', '2'], 'tri, dédoublonnage, exclusion des chapitres externes');
+  r = await get(`/mdx/manga/${MID}/feed?translatedLanguage[]=fr`);
+  assert.equal(r.body.total, 4);
 
-  r = await get(`/api/chapter/${CH(1)}/pages`);
-  assert.equal(r.body.pages.length, 2);
-  const img = await fetch(base + r.body.pages[0]);
+  r = await get(`/mdx/at-home/server/${CH(1)}`);
+  const page = `${r.body.baseUrl}/data/${r.body.chapter.hash}/${r.body.chapter.data[0]}`;
+  const img = await fetch(base + '/img?u=' + encodeURIComponent(page));
   assert.equal(img.status, 200);
   assert.equal(img.headers.get('content-type'), 'image/png');
+
+  r = await get('/mdx/user/me');
+  assert.equal(r.status, 404, 'seules les routes de lecture sont relayées');
 
   r = await get('/img?u=' + encodeURIComponent('http://evil.example.com/x.png'));
   assert.equal(r.status, 403, 'proxy limité aux hôtes MangaDex');

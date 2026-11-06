@@ -1,0 +1,9 @@
+{
+  "appId": "app.mangascan.reader",
+  "appName": "Manga-scan",
+  "webDir": "public",
+  "android": { "allowMixedContent": false },
+  "plugins": {
+    "CapacitorHttp": { "enabled": true }
+  }
+}

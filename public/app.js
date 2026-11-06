@@ -22,12 +22,6 @@ function toggleFav(m) {
 
 // ---------- Utilitaires ----------
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-async function api(path) {
-  const r = await fetch(path);
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(data.error || `Erreur ${r.status}`);
-  return data;
-}
 const chLabel = (c) => (c.chapter ? `Chapitre ${c.chapter}` : 'Oneshot') + (c.title ? ` — ${c.title}` : '');
 const card = (m, sub = '') => `
   <a class="card" href="#/manga/${m.id}">
@@ -66,9 +60,7 @@ async function loadMore() {
   if (!$grid) return;
   $more.innerHTML = '<p class="msg">Chargement…</p>';
   try {
-    const p = new URLSearchParams({ lang, sort: listState.sort, offset: listState.offset });
-    if (listState.q) p.set('q', listState.q);
-    const data = await api('/api/manga?' + p);
+    const data = await MangaDex.listManga({ lang, q: listState.q, sort: listState.sort, offset: listState.offset });
     if (!document.getElementById('grid')) return; // l'utilisateur a changé de page
     $grid.insertAdjacentHTML('beforeend', data.items.map((m) => card(m, m.year || '')).join(''));
     listState.offset += data.items.length;
@@ -84,7 +76,7 @@ async function loadMore() {
 const mangaCache = new Map();
 async function getManga(id) {
   const key = id + ':' + lang;
-  if (!mangaCache.has(key)) mangaCache.set(key, api(`/api/manga/${id}?lang=${lang}`).catch((e) => { mangaCache.delete(key); throw e; }));
+  if (!mangaCache.has(key)) mangaCache.set(key, MangaDex.getManga(id, lang).catch((e) => { mangaCache.delete(key); throw e; }));
   return mangaCache.get(key);
 }
 
@@ -137,7 +129,7 @@ async function viewReader(mangaId, chapterId) {
   $app.innerHTML = '<p class="msg">Chargement du chapitre…</p>';
   let m, pages;
   try {
-    [m, { pages }] = await Promise.all([getManga(mangaId), api(`/api/chapter/${chapterId}/pages?saver=${store.get('saver', false) ? 1 : 0}`)]);
+    [m, pages] = await Promise.all([getManga(mangaId), MangaDex.getPages(chapterId, store.get('saver', false))]);
   } catch (e) { $app.innerHTML = errorBox(e) + '<p class="msg"><a class="btn" href="#/">Accueil</a></p>'; return; }
   const idx = m.chapters.findIndex((c) => c.id === chapterId);
   const ch = m.chapters[idx] || { id: chapterId, chapter: null };

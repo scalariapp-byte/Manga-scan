@@ -1,4 +1,5 @@
-// Serveur Manga-scan : sert l'interface et relaie (proxy) l'API publique MangaDex.
+// Serveur Manga-scan (version web) : sert l'interface et relaie l'API MangaDex et ses images.
+// L'APK Android n'en a pas besoin : il appelle MangaDex directement.
 // Aucune dépendance : Node >= 18 (fetch natif).
 const http = require('http');
 const fs = require('fs');
@@ -6,7 +7,6 @@ const path = require('path');
 
 const PORT = Number(process.env.PORT) || 3000;
 const API = (process.env.MANGADEX_API || 'https://api.mangadex.org').replace(/\/$/, '');
-const COVERS = (process.env.MANGADEX_COVERS || 'https://uploads.mangadex.org').replace(/\/$/, '');
 const UA = 'Manga-scan/1.0 (lecteur personnel)';
 const PUBLIC = path.join(__dirname, 'public');
 
@@ -26,7 +26,7 @@ async function apiGet(pathAndQuery, ttlMs = 5 * 60 * 1000) {
   const res = await fetch(API + pathAndQuery, { headers: { 'User-Agent': UA, Accept: 'application/json' } });
   if (!res.ok) {
     const err = new Error(`MangaDex ${res.status} sur ${pathAndQuery}`);
-    err.status = res.status === 404 ? 404 : 502;
+    err.status = [404, 429].includes(res.status) ? res.status : 502;
     throw err;
   }
   const data = await res.json();
@@ -35,96 +35,14 @@ async function apiGet(pathAndQuery, ttlMs = 5 * 60 * 1000) {
   return data;
 }
 
-const RATINGS = ['safe', 'suggestive'];
-const UUID = /^[0-9a-f-]{36}$/i;
-const LANG = /^[a-z]{2}(-[a-z]{2})?$/i;
+// Seules ces routes de l'API MangaDex sont relayées.
+const ALLOWED = [/^\/manga$/, /^\/manga\/[0-9a-f-]{36}$/i, /^\/manga\/[0-9a-f-]{36}\/feed$/i, /^\/at-home\/server\/[0-9a-f-]{36}$/i];
 
-function pickTitle(obj, langs) {
-  if (!obj) return '';
-  for (const l of langs) if (obj[l]) return obj[l];
-  return Object.values(obj)[0] || '';
-}
-
-function simplifyManga(m, lang) {
-  const a = m.attributes;
-  const langs = [lang, 'fr', 'en', 'ja-ro', 'ja'];
-  let title = pickTitle(a.title, langs);
-  const alt = (a.altTitles || []).find((t) => t[lang]);
-  if (alt && !a.title[lang]) title = alt[lang];
-  const cover = (m.relationships || []).find((r) => r.type === 'cover_art');
-  const author = (m.relationships || []).find((r) => r.type === 'author');
-  return {
-    id: m.id,
-    title,
-    description: pickTitle(a.description, [lang, 'fr', 'en']),
-    status: a.status,
-    year: a.year,
-    tags: (a.tags || []).map((t) => pickTitle(t.attributes.name, [lang, 'en'])).slice(0, 8),
-    author: author && author.attributes ? author.attributes.name : null,
-    cover: cover && cover.attributes ? `/img?u=${encodeURIComponent(`${COVERS}/covers/${m.id}/${cover.attributes.fileName}.256.jpg`)}` : null,
-    languages: a.availableTranslatedLanguages || [],
-  };
-}
-
-function qs(params) {
-  const p = new URLSearchParams();
-  for (const [k, v] of params) p.append(k, v);
-  return p.toString();
-}
-
-async function listManga(url) {
-  const lang = LANG.test(url.searchParams.get('lang') || '') ? url.searchParams.get('lang') : 'fr';
-  const q = (url.searchParams.get('q') || '').slice(0, 100);
-  const sort = url.searchParams.get('sort') || 'popular';
-  const offset = Math.max(0, Math.min(9900, Number(url.searchParams.get('offset')) || 0));
-  const params = [['limit', '24'], ['offset', String(offset)], ['includes[]', 'cover_art'], ['includes[]', 'author'], ['availableTranslatedLanguage[]', lang], ['hasAvailableChapters', 'true']];
-  for (const r of RATINGS) params.push(['contentRating[]', r]);
-  if (q) params.push(['title', q], ['order[relevance]', 'desc']);
-  else if (sort === 'latest') params.push(['order[latestUploadedChapter]', 'desc']);
-  else if (sort === 'rating') params.push(['order[rating]', 'desc']);
-  else params.push(['order[followedCount]', 'desc']);
-  const data = await apiGet('/manga?' + qs(params));
-  return { total: data.total, offset, items: data.data.map((m) => simplifyManga(m, lang)) };
-}
-
-async function getManga(id, url) {
-  const lang = LANG.test(url.searchParams.get('lang') || '') ? url.searchParams.get('lang') : 'fr';
-  const data = await apiGet(`/manga/${id}?` + qs([['includes[]', 'cover_art'], ['includes[]', 'author']]));
-  const manga = simplifyManga(data.data, lang);
-
-  // Récupère tous les chapitres (pagination par 500).
-  const chapters = [];
-  for (let offset = 0; offset < 10000; offset += 500) {
-    const params = [['limit', '500'], ['offset', String(offset)], ['translatedLanguage[]', lang], ['order[volume]', 'asc'], ['order[chapter]', 'asc'], ['includes[]', 'scanlation_group']];
-    for (const r of [...RATINGS, 'erotica', 'pornographic']) params.push(['contentRating[]', r]);
-    const feed = await apiGet(`/manga/${id}/feed?` + qs(params));
-    for (const c of feed.data) {
-      const a = c.attributes;
-      if (a.externalUrl || a.pages === 0) continue; // chapitres hébergés ailleurs : illisibles ici
-      const group = (c.relationships || []).find((r) => r.type === 'scanlation_group');
-      chapters.push({ id: c.id, chapter: a.chapter, volume: a.volume, title: a.title, pages: a.pages, publishedAt: a.publishAt, group: group && group.attributes ? group.attributes.name : null });
-    }
-    if (offset + 500 >= feed.total) break;
-  }
-  // Dédoublonne : un seul upload par numéro de chapitre (le premier rencontré).
-  const seen = new Set();
-  manga.chapters = chapters.filter((c) => {
-    const key = c.chapter == null ? c.id : c.chapter;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-  manga.chapters.sort((x, y) => (parseFloat(x.chapter) || 0) - (parseFloat(y.chapter) || 0));
-  return manga;
-}
-
-async function getPages(id, url) {
-  const saver = url.searchParams.get('saver') === '1';
-  // Les URLs du serveur "at-home" expirent vite : cache court.
-  const data = await apiGet(`/at-home/server/${id}`, 60 * 1000);
-  const files = saver ? data.chapter.dataSaver : data.chapter.data;
-  const dir = saver ? 'data-saver' : 'data';
-  return { pages: files.map((f) => `/img?u=${encodeURIComponent(`${data.baseUrl}/${dir}/${data.chapter.hash}/${f}`)}`) };
+async function proxyApi(url, res) {
+  const sub = url.pathname.slice('/mdx'.length);
+  if (!ALLOWED.some((re) => re.test(sub))) return send(res, 404, { error: 'Route inconnue' });
+  const ttl = sub.startsWith('/at-home') ? 60 * 1000 : 5 * 60 * 1000;
+  send(res, 200, await apiGet(sub + url.search, ttl));
 }
 
 async function proxyImage(url, res) {
@@ -166,12 +84,8 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   const p = url.pathname;
   try {
-    if (p === '/api/manga') return send(res, 200, await listManga(url));
-    let m;
-    if ((m = p.match(/^\/api\/manga\/([^/]+)$/)) && UUID.test(m[1])) return send(res, 200, await getManga(m[1], url));
-    if ((m = p.match(/^\/api\/chapter\/([^/]+)\/pages$/)) && UUID.test(m[1])) return send(res, 200, await getPages(m[1], url));
+    if (p.startsWith('/mdx/')) return await proxyApi(url, res);
     if (p === '/img') return await proxyImage(url, res);
-    if (p.startsWith('/api/')) return send(res, 404, { error: 'Route inconnue' });
     return serveStatic(p, res);
   } catch (e) {
     console.error(e.message);
