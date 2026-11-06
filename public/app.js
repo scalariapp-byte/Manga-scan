@@ -22,13 +22,16 @@ function toggleFav(m) {
 
 // ---------- Utilitaires ----------
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const STATUS = { ongoing: 'En cours', completed: 'Terminé', hiatus: 'En pause', cancelled: 'Annulé' };
 const chLabel = (c) => (c.chapter ? `Chapitre ${c.chapter}` : 'Oneshot') + (c.title ? ` — ${c.title}` : '');
-const card = (m, sub = '') => `
-  <a class="card" href="#/manga/${m.id}">
-    <div class="cover">${m.cover ? `<img loading="lazy" src="${esc(m.cover)}" alt="">` : ''}</div>
-    <div class="t">${esc(m.title)}</div>${sub ? `<div class="s">${esc(sub)}</div>` : ''}
+const coverImg = (src) => (src ? `<img loading="lazy" src="${esc(src)}" alt="" onload="this.classList.add('ok')">` : '');
+const card = (m, sub = '', href = `#/manga/${m.id}`) => `
+  <a class="card" href="${href}">
+    <div class="cover">${coverImg(m.cover)}${sub ? `<span class="badge">${esc(sub)}</span>` : ''}</div>
+    <div class="t">${esc(m.title)}</div>
   </a>`;
-const errorBox = (e) => `<p class="msg">⚠️ ${esc(e.message)}<br><button class="btn" onclick="route()">Réessayer</button></p>`;
+const skeletons = (n) => Array.from({ length: n }, () => '<div class="card skel"><div class="cover"></div><div class="t" style="margin-top:8px"></div></div>').join('');
+const errorBox = (e) => `<div class="err"><b>Impossible de charger</b>${esc(e.message)}<br><button class="btn primary" onclick="route()">Réessayer</button></div>`;
 
 // ---------- Accueil / recherche ----------
 let listState = { sort: 'popular', q: '', offset: 0 };
@@ -39,16 +42,13 @@ async function viewHome(q = '') {
   const h = Object.values(history()).sort((a, b) => b.at - a.at).slice(0, 20);
   const f = Object.values(favs());
   $app.innerHTML = `
-    ${!q && h.length ? `<h2>Continuer la lecture</h2><div class="row">${h.map((x) => `
-      <a class="card" href="#/read/${x.id}/${x.chapterId}">
-        <div class="cover">${x.cover ? `<img loading="lazy" src="${esc(x.cover)}" alt="">` : ''}</div>
-        <div class="t">${esc(x.title)}</div><div class="s">Ch. ${esc(x.chapter ?? '?')}</div></a>`).join('')}</div>` : ''}
+    ${!q && h.length ? `<h2>Continuer la lecture</h2><div class="row">${h.map((x) => card(x, `Ch. ${x.chapter ?? '?'}`, `#/read/${x.id}/${x.chapterId}`)).join('')}</div>` : ''}
     ${!q && f.length ? `<h2>Favoris</h2><div class="row">${f.map((m) => card(m)).join('')}</div>` : ''}
     <h2>${q ? `Résultats pour « ${esc(q)} »` : 'Découvrir'}</h2>
     ${q ? '' : `<div class="tabs">
       ${[['popular', 'Populaires'], ['latest', 'Mis à jour'], ['rating', 'Mieux notés']].map(([k, l]) =>
         `<button class="tab ${listState.sort === k ? 'active' : ''}" data-sort="${k}">${l}</button>`).join('')}
-    </div><br>`}
+    </div>`}
     <div class="grid" id="grid"></div>
     <div class="more" id="more"></div>`;
   $app.querySelectorAll('[data-sort]').forEach((b) => b.onclick = () => { listState.sort = b.dataset.sort; viewHome(); });
@@ -58,18 +58,20 @@ async function viewHome(q = '') {
 async function loadMore() {
   const $grid = document.getElementById('grid'), $more = document.getElementById('more');
   if (!$grid) return;
-  $more.innerHTML = '<p class="msg">Chargement…</p>';
+  $more.innerHTML = '';
+  $grid.insertAdjacentHTML('beforeend', skeletons(listState.offset ? 6 : 12));
   try {
     const data = await MangaDex.listManga({ lang, q: listState.q, sort: listState.sort, offset: listState.offset });
     if (!document.getElementById('grid')) return; // l'utilisateur a changé de page
-    $grid.insertAdjacentHTML('beforeend', data.items.map((m) => card(m, m.year || '')).join(''));
+    $grid.querySelectorAll('.skel').forEach((el) => el.remove());
+    $grid.insertAdjacentHTML('beforeend', data.items.map((m) => card(m)).join(''));
     listState.offset += data.items.length;
     if (!listState.offset) $more.innerHTML = '<p class="msg">Aucun manga trouvé dans cette langue.</p>';
     else if (listState.offset < data.total && data.items.length) {
       $more.innerHTML = '<button class="btn">Voir plus</button>';
       $more.firstChild.onclick = loadMore;
     } else $more.innerHTML = '';
-  } catch (e) { $more.innerHTML = errorBox(e); }
+  } catch (e) { $grid.querySelectorAll('.skel').forEach((el) => el.remove()); $more.innerHTML = errorBox(e); }
 }
 
 // ---------- Fiche manga ----------
@@ -81,7 +83,7 @@ async function getManga(id) {
 }
 
 async function viewManga(id) {
-  $app.innerHTML = '<p class="msg">Chargement…</p>';
+  $app.innerHTML = '<div class="grid" style="margin-top:20px">' + skeletons(6) + '</div>';
   let m;
   try { m = await getManga(id); } catch (e) { $app.innerHTML = errorBox(e); return; }
   document.title = m.title + ' — Manga-scan';
@@ -93,28 +95,31 @@ async function viewManga(id) {
     const isFav = !!favs()[id];
     const list = desc ? [...m.chapters].reverse() : m.chapters;
     $app.innerHTML = `
-      <div class="detail">
-        <div>${m.cover ? `<img class="cover" src="${esc(m.cover)}" alt="">` : ''}</div>
-        <div>
-          <h1>${esc(m.title)}</h1>
-          <div class="meta">${[m.author, m.year, m.status].filter(Boolean).map(esc).join(' · ')} · ${m.chapters.length} chapitres (${esc(lang.toUpperCase())})</div>
-          <div class="tags">${m.tags.map((t) => `<span>${esc(t)}</span>`).join('')}</div>
+      <div class="hero">
+        ${m.cover ? `<div class="bg" style="background-image:url('${esc(m.cover)}')"></div>` : ''}
+        <div class="detail">
+          <div>${m.cover ? `<img class="cover" src="${esc(m.cover)}" alt="">` : ''}</div>
+          <div>
+            <h1>${esc(m.title)}</h1>
+            <div class="meta">${[m.author, m.year, STATUS[m.status] || m.status].filter(Boolean).map(esc).join(' · ')}</div>
+            <div class="tags">${m.tags.slice(0, 5).map((t) => `<span>${esc(t)}</span>`).join('')}</div>
+          </div>
+        </div>
+      </div>
           <div class="actions">
             ${hist ? `<a class="btn primary" href="#/read/${id}/${hist.chapterId}">Reprendre ch. ${esc(hist.chapter ?? '?')}</a>` : ''}
             ${first ? `<a class="btn ${hist ? '' : 'primary'}" href="#/read/${id}/${first.id}">Commencer</a>` : ''}
-            <button class="btn" id="fav">${isFav ? '★ Favori' : '☆ Ajouter aux favoris'}</button>
-            <button class="btn" id="order">${desc ? 'Plus récents ↓' : 'Plus anciens ↓'}</button>
+            <button class="btn" id="fav">${isFav ? '★ Favori' : '☆ Favori'}</button>
           </div>
           ${m.description ? `<div class="desc" id="desc">${esc(m.description)}</div>` : ''}
-        </div>
-      </div>
-      <h2>Chapitres</h2>
+      <div class="chhead"><h2>${m.chapters.length} chapitres <span class="meta">(${esc(lang.toUpperCase())})</span></h2>
+        <button class="btn" id="order">${desc ? '↓ Récents' : '↑ Anciens'}</button></div>
       ${m.chapters.length ? `<ul class="chapters">${list.map((c) => `
         <li><a href="#/read/${id}/${c.id}" class="${read[c.id] ? 'read' : ''}">
-          <span>${c.volume ? `Vol. ${esc(c.volume)} · ` : ''}${esc(chLabel(c))}</span>
-          <small>${esc(c.group || '')} ${c.publishedAt ? new Date(c.publishedAt).toLocaleDateString('fr-FR') : ''}</small>
+          <span class="name">${esc(chLabel(c))}</span>
+          <small>${c.volume ? `Vol. ${esc(c.volume)}<br>` : ''}${c.publishedAt ? new Date(c.publishedAt).toLocaleDateString('fr-FR') : ''}</small>
         </a></li>`).join('')}</ul>`
-      : `<p class="msg">Aucun chapitre lisible dans cette langue. Essayez une autre langue en haut à droite.</p>`}`;
+      : `<div class="err"><b>Aucun chapitre lisible en ${esc(lang.toUpperCase())}</b>Les chapitres de ce manga sont peut-être publiés par un éditeur officiel (non lisibles ici). Essayez une autre langue en haut à droite.</div>`}`;
     document.getElementById('fav').onclick = () => { toggleFav(m); render(); };
     document.getElementById('order').onclick = () => { desc = !desc; render(); };
     const d = document.getElementById('desc'); if (d) d.onclick = () => d.classList.toggle('open');
@@ -126,11 +131,11 @@ async function viewManga(id) {
 let readerCleanup = null;
 async function viewReader(mangaId, chapterId) {
   document.body.classList.add('reading');
-  $app.innerHTML = '<p class="msg">Chargement du chapitre…</p>';
+  $app.innerHTML = '<p class="msg" style="padding-top:40vh">Chargement du chapitre…</p>';
   let m, pages;
   try {
     [m, pages] = await Promise.all([getManga(mangaId), MangaDex.getPages(chapterId, store.get('saver', false))]);
-  } catch (e) { $app.innerHTML = errorBox(e) + '<p class="msg"><a class="btn" href="#/">Accueil</a></p>'; return; }
+  } catch (e) { $app.innerHTML = errorBox(e) + '<p class="msg"><a class="btn" href="#/manga/' + esc(mangaId) + '">Retour</a></p>'; return; }
   const idx = m.chapters.findIndex((c) => c.id === chapterId);
   const ch = m.chapters[idx] || { id: chapterId, chapter: null };
   const prev = m.chapters[idx - 1], next = m.chapters[idx + 1];
@@ -151,8 +156,8 @@ async function viewReader(mangaId, chapterId) {
   const shell = (body) => `
     <div class="rbar" id="rbar">
       <a class="btn" href="#/manga/${mangaId}" title="Retour">←</a>
-      <div class="ttl">${esc(m.title)}</div>
-      <select id="chsel">${m.chapters.map((c) => `<option value="${c.id}" ${c.id === chapterId ? 'selected' : ''}>${esc(chLabel(c))}</option>`).join('')}</select>
+      <div class="ttl"><b>${esc(m.title)}</b>
+      <select id="chsel">${m.chapters.map((c) => `<option value="${c.id}" ${c.id === chapterId ? 'selected' : ''}>${esc(chLabel(c))}</option>`).join('')}</select></div>
       <button class="btn" id="mode" title="Mode de lecture">${mode === 'vertical' ? '⇕' : '⇔'}</button>
     </div>${body}`;
   const endnav = `<div class="endnav">
@@ -179,6 +184,7 @@ async function viewReader(mangaId, chapterId) {
       let lastY = scrollY; const bar = document.getElementById('rbar');
       const onScroll = () => { bar.classList.toggle('hide', scrollY > lastY && scrollY > 80); lastY = scrollY; };
       addEventListener('scroll', onScroll, { passive: true });
+      document.querySelector('.pages').onclick = () => bar.classList.toggle('hide');
       cleanups.push(() => removeEventListener('scroll', onScroll));
     } else {
       let page = startPage;
@@ -195,7 +201,10 @@ async function viewReader(mangaId, chapterId) {
         if (p >= pages.length) return go(next);
         page = p; show();
       };
-      document.getElementById('paged').onclick = (e) => step(e.clientX < innerWidth / 3 ? -1 : 1);
+      document.getElementById('paged').onclick = (e) => {
+        const x = e.clientX / innerWidth;
+        if (x < 1 / 3) step(-1); else if (x > 2 / 3) step(1); else document.getElementById('rbar').classList.toggle('hide');
+      };
       const onKey = (e) => { if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); step(1); } if (e.key === 'ArrowLeft') step(-1); };
       addEventListener('keydown', onKey);
       cleanups.push(() => removeEventListener('keydown', onKey));

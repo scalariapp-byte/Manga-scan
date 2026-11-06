@@ -2,7 +2,8 @@
 // - Dans l'APK (Capacitor) : appels directs à api.mangadex.org via le HTTP natif (pas de CORS).
 // - Dans le navigateur : passage par le serveur Node (/mdx et /img).
 (function () {
-  const NATIVE = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+  const cap = window.Capacitor;
+  const NATIVE = !!(window.androidBridge || (cap && cap.isNativePlatform && cap.isNativePlatform()));
   const API = NATIVE ? 'https://api.mangadex.org' : '/mdx';
   const COVERS = 'https://uploads.mangadex.org';
   const img = (url) => (NATIVE ? url : '/img?u=' + encodeURIComponent(url));
@@ -16,14 +17,38 @@
     const url = API + path + (params ? '?' + q : '');
     const hit = cache.get(url);
     if (hit && hit.exp > Date.now()) return hit.data;
+    const { status, data } = NATIVE ? await nativeGet(url) : await webGet(url);
+    if (status === 429) throw new Error('MangaDex limite les requêtes : réessayez dans quelques secondes.');
+    if (status < 200 || status >= 300) throw new Error(`MangaDex a répondu ${status}.`);
+    if (!data || typeof data !== 'object') throw new Error('Réponse inattendue de MangaDex.');
+    cache.set(url, { data, exp: Date.now() + ttl });
+    return data;
+  }
+
+  // APK : requête HTTP native (pas de CORS, pas d'interception par le WebView).
+  async function nativeGet(url) {
+    const opts = { url, method: 'GET', headers: { Accept: 'application/json', 'User-Agent': 'Manga-scan/1.0 (Android)' }, responseType: 'json' };
+    let r;
+    try {
+      if (cap && cap.nativePromise) r = await cap.nativePromise('CapacitorHttp', 'request', opts);
+      else if (cap && cap.Plugins && cap.Plugins.CapacitorHttp) r = await cap.Plugins.CapacitorHttp.request(opts);
+      else return webGet(url);
+    } catch (e) {
+      throw new Error('Pas de connexion à MangaDex (' + ((e && e.message) || 'erreur réseau') + ').');
+    }
+    let data = r.data;
+    if (typeof data === 'string') { try { data = JSON.parse(data); } catch { data = null; } }
+    return { status: r.status, data };
+  }
+
+  async function webGet(url) {
     let r;
     try { r = await fetch(url, { headers: { Accept: 'application/json' } }); }
     catch { throw new Error('Pas de connexion à MangaDex. Vérifiez votre réseau.'); }
-    if (r.status === 429) throw new Error('MangaDex limite les requêtes : réessayez dans quelques secondes.');
-    if (!r.ok) throw new Error(`MangaDex a répondu ${r.status}`);
-    const data = await r.json();
-    cache.set(url, { data, exp: Date.now() + ttl });
-    return data;
+    const text = await r.text();
+    let data = null;
+    try { data = JSON.parse(text); } catch {}
+    return { status: r.status, data };
   }
 
   const pick = (obj, langs) => { if (!obj) return ''; for (const l of langs) if (obj[l]) return obj[l]; return Object.values(obj)[0] || ''; };

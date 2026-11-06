@@ -2,8 +2,10 @@
   "appId": "app.mangascan.reader",
   "appName": "Manga-scan",
   "webDir": "public",
+  "backgroundColor": "#0e0f13",
   "android": { "allowMixedContent": false },
   "plugins": {
-    "CapacitorHttp": { "enabled": true }
+    "CapacitorHttp": { "enabled": true },
+    "SystemBars": { "style": "DARK", "insetsHandling": "css" }
   }
 }
