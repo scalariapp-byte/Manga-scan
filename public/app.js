@@ -22,6 +22,7 @@ function toggleFav(m) {
 
 // ---------- Utilitaires ----------
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fillOn = () => store.get('fill', true); // compléter les chapitres manquants avec l'anglais
 const saverOn = () => store.get('saver', true); // pages allégées par défaut : 3 à 5 fois plus légères
 const LANGS = { fr: 'Français', en: 'Anglais', 'es-la': 'Espagnol', es: 'Espagnol (ES)', 'pt-br': 'Portugais', it: 'Italien', de: 'Allemand' };
 const STATUS = { ongoing: 'En cours', completed: 'Terminé', hiatus: 'En pause', cancelled: 'Annulé' };
@@ -79,8 +80,8 @@ async function loadMore() {
 // ---------- Fiche manga ----------
 const mangaCache = new Map();
 async function getManga(id) {
-  const key = id + ':' + lang;
-  if (!mangaCache.has(key)) mangaCache.set(key, MangaDex.getManga(id, lang).catch((e) => { mangaCache.delete(key); throw e; }));
+  const key = id + ':' + lang + ':' + fillOn();
+  if (!mangaCache.has(key)) mangaCache.set(key, MangaDex.getManga(id, lang, false, fillOn()).catch((e) => { mangaCache.delete(key); throw e; }));
   return mangaCache.get(key);
 }
 
@@ -117,15 +118,19 @@ async function viewManga(id) {
           </div>
           ${m.description ? `<div class="desc" id="desc">${esc(m.description)}</div>` : ''}
       <div class="chhead"><h2>${m.chapters ? m.chapters.length : '…'} chapitres <span class="meta">(${esc(lang.toUpperCase())})</span></h2>
-        <button class="btn" id="order">${desc ? '↓ Récents' : '↑ Anciens'}</button></div>
+        <div class="tabs" style="margin:0">${lang !== 'en' ? `<button class="tab ${fillOn() ? 'active' : ''}" id="fill" title="Compléter les chapitres manquants avec l'anglais">+EN</button>` : ''}
+        <button class="btn" id="order">${desc ? '↓' : '↑'}</button></div></div>
       ${!m.chapters ? `<ul class="chapters">${'<li class="skel"><a><span class="t" style="width:40%"></span></a></li>'.repeat(8)}</ul>` : m.chapters.length ? `<ul class="chapters">${list.map((c) => `
-        <li><a href="${c.external ? esc(c.external) : `#/read/${id}/${c.id}`}" ${c.external ? `target="${MangaDex.NATIVE ? '_self' : '_blank'}" rel="noopener"` : ''} class="${read[c.id] ? 'read' : ''}">
-          <span class="name">${esc(chLabel(c))}${c.external ? ' <span class="ext">↗ Site officiel</span>' : ''}</span>
+        <li><a href="${c.external ? '#' : `#/read/${id}/${c.id}`}" ${c.external ? `data-ext="${esc(c.external)}"` : ''} class="${read[c.id] ? 'read' : ''}">
+          <span class="name">${esc(chLabel(c))}${c.lang && c.lang !== lang ? ` <span class="lng">${esc(c.lang.split('-')[0].toUpperCase())}</span>` : ''}${c.external ? ' <span class="ext">Éditeur officiel</span>' : ''}</span>
           <small>${c.volume ? `Vol. ${esc(c.volume)}<br>` : ''}${c.publishedAt ? new Date(c.publishedAt).toLocaleDateString('fr-FR') : ''}</small>
         </a></li>`).join('')}</ul>`
       : `<div class="err"><b>Aucun chapitre en ${esc(LANGS[lang] || lang)} sur MangaDex</b>${otherLangs.length ? 'Disponible en :' : 'Ce manga a probablement été retiré de MangaDex (licence).'}
           ${otherLangs.length ? `<div class="actions" style="justify-content:center">${otherLangs.map((l) => `<button class="btn" data-lang="${l}">${esc(LANGS[l])}</button>`).join('')}</div>` : ''}</div>`}
-      ${nExt && nExt === m.chapters.length ? `<p class="meta" style="margin-top:12px">Ces chapitres sont publiés gratuitement par l'éditeur officiel : ils s'ouvrent sur son site.</p>` : ''}`;
+      ${nExt ? `<p class="meta" style="margin-top:12px">Les chapitres « Éditeur officiel » sont publiés gratuitement par l'éditeur : ils s'ouvrent dans le lecteur intégré, touchez « Fermer » pour revenir.</p>` : ''}`;
+    const fb = document.getElementById('fill');
+    if (fb) fb.onclick = () => { store.set('fill', !fillOn()); route(); };
+    $app.querySelectorAll('[data-ext]').forEach((a) => a.onclick = (e) => { e.preventDefault(); MangaDex.openExternal(a.dataset.ext); });
     $app.querySelectorAll('[data-lang]').forEach((b) => b.onclick = () => { lang = b.dataset.lang; $lang.value = lang; store.set('lang', lang); route(); });
     document.getElementById('fav').onclick = () => { toggleFav(m); render(); };
     document.getElementById('order').onclick = () => { desc = !desc; render(); };
@@ -139,9 +144,9 @@ async function viewManga(id) {
   m = full;
   render();
   // Si la liste venait du cache, on vérifie en arrière-plan s'il y a de nouveaux chapitres.
-  MangaDex.getManga(id, lang, true).then((fresh) => {
+  MangaDex.getManga(id, lang, true, fillOn()).then((fresh) => {
     if (location.hash !== here || fresh.chapters.length === m.chapters.length) return;
-    mangaCache.set(id + ':' + lang, Promise.resolve(fresh));
+    mangaCache.set(id + ':' + lang + ':' + fillOn(), Promise.resolve(fresh));
     m = fresh; render();
   }).catch(() => {});
   // Le chapitre le plus probable (reprise ou premier) est préchargé pour une ouverture instantanée.

@@ -131,3 +131,7 @@ body.reading main { max-width: none; padding: 0; }
 @media (max-width: 360px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .chapters .ext { display: inline-block; margin-left: 6px; font-size: 11px; font-weight: 700; color: var(--accent-2); }
 img.fail { min-height: 0 !important; }
+.chapters .lng { display: inline-block; margin-left: 6px; font-size: 10px; font-weight: 800; padding: 1px 5px; border-radius: 4px; background: rgba(255,255,255,.1); color: #c8ccd6; vertical-align: 1px; }
+.chapters .ext { padding: 1px 6px; border-radius: 4px; background: rgba(255,138,91,.15); font-size: 10px; vertical-align: 1px; }
+.chhead .tab { height: 34px; }
+.chhead .btn { height: 34px; padding: 0 12px; }

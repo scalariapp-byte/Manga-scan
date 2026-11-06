@@ -132,22 +132,25 @@
   const known = new Map(); // résumés déjà vus dans les listes : affichage immédiat de la fiche
   const summary = (id) => known.get(id) || null;
 
-  const feedPage = (id, lang, offset, force) => {
-    const p = [['limit', '500'], ['offset', String(offset)], ['translatedLanguage[]', lang], ['order[volume]', 'asc'], ['order[chapter]', 'asc']];
+  const feedPage = (id, langs, offset, force) => {
+    const p = [['limit', '500'], ['offset', String(offset)], ['order[volume]', 'asc'], ['order[chapter]', 'asc']];
+    for (const l of langs) p.push(['translatedLanguage[]', l]);
     for (const r of [...RATINGS, 'erotica', 'pornographic']) p.push(['contentRating[]', r]);
     return get(`/manga/${id}/feed`, p, undefined, true, force);
   };
 
-  async function getManga(id, lang, force = false) {
+  // fill = true : les chapitres absents dans `lang` sont complétés par la version anglaise.
+  async function getManga(id, lang, force = false, fill = true) {
+    const langs = fill && lang !== 'en' ? [lang, 'en'] : [lang];
     // Fiche et premier lot de chapitres en parallèle.
-    const [data, first] = await Promise.all([get(`/manga/${id}`, [['includes[]', 'cover_art'], ['includes[]', 'author']], 60 * 60 * 1000), feedPage(id, lang, 0, force)]);
+    const [data, first] = await Promise.all([get(`/manga/${id}`, [['includes[]', 'cover_art'], ['includes[]', 'author']], 60 * 60 * 1000), feedPage(id, langs, 0, force)]);
     const manga = simplify(data.data, lang);
     known.set(id, manga);
     const feeds = [first];
     if (first.total > 500) {
       const offsets = [];
       for (let o = 500; o < Math.min(first.total, 10000); o += 500) offsets.push(o);
-      feeds.push(...(await Promise.all(offsets.map((o) => feedPage(id, lang, o, force)))));
+      feeds.push(...(await Promise.all(offsets.map((o) => feedPage(id, langs, o, force)))));
     }
     const chapters = [];
     for (const feed of feeds) for (const c of feed.data) {
@@ -155,9 +158,11 @@
       // Chapitres publiés par un éditeur officiel : pas d'images sur MangaDex, on garde le lien externe.
       const external = a.externalUrl || null;
       if (!external && a.pages === 0) continue;
-      chapters.push({ id: c.id, chapter: a.chapter, volume: a.volume, title: a.title, publishedAt: a.publishAt, external });
+      chapters.push({ id: c.id, chapter: a.chapter, volume: a.volume, title: a.title, publishedAt: a.publishAt, external, lang: a.translatedLanguage });
     }
-    chapters.sort((x, y) => (x.external ? 1 : 0) - (y.external ? 1 : 0)); // en cas de doublon, la version lisible gagne
+    // En cas de doublon, priorité : langue choisie lisible > autre langue lisible > liens officiels.
+    const rank = (c) => (c.external ? 2 : 0) + (c.lang === lang ? 0 : 1);
+    chapters.sort((x, y) => rank(x) - rank(y));
     const seen = new Set();
     manga.chapters = chapters.filter((c) => { const k = c.chapter == null ? c.id : c.chapter; if (seen.has(k)) return false; seen.add(k); return true; });
     manga.chapters.sort((x, y) => (parseFloat(x.chapter) || 0) - (parseFloat(y.chapter) || 0));
@@ -233,5 +238,25 @@
     } catch { warmed.delete(key); }
   }
 
-  window.MangaDex = { listManga, getManga, getPages, prefetchChapter, loadImage, summary, NATIVE };
+  // Ouvre une page (chapitre d'un éditeur officiel) dans un navigateur intégré plein écran,
+  // sans barre d'adresse : on reste dans l'app, un bouton « Fermer » ramène à la liste.
+  async function openExternal(url) {
+    if (!NATIVE || !(cap && cap.nativePromise)) { window.open(url, '_blank', 'noopener'); return; }
+    try {
+      await cap.nativePromise('InAppBrowser', 'openInWebView', {
+        url,
+        options: {
+          showURL: false, showToolbar: true, clearCache: false, clearSessionCache: false,
+          mediaPlaybackRequiresUserAction: false, closeButtonText: 'Fermer', toolbarPosition: 0,
+          showNavigationButtons: true, leftToRight: false, customWebViewUserAgent: null,
+          android: { allowZoom: true, hardwareBack: true, pauseMedia: true },
+          iOS: { allowOverScroll: true, enableViewportScale: false, allowInLineMediaPlayback: false, surpressIncrementalRendering: false, viewStyle: 2, animationEffect: 2, allowsBackForwardNavigationGestures: true },
+        },
+      });
+    } catch {
+      location.href = url; // repli : navigateur système
+    }
+  }
+
+  window.MangaDex = { listManga, getManga, getPages, prefetchChapter, loadImage, openExternal, summary, NATIVE };
 })();
