@@ -94,6 +94,25 @@
 
   const pick = (obj, langs) => { if (!obj) return ''; for (const l of langs) if (obj[l]) return obj[l]; return Object.values(obj)[0] || ''; };
 
+  // Liens « officiels » fournis par MangaDex (éditeur, plateformes légales, librairies).
+  const LINKS = {
+    engtl: (v) => ['Éditeur (anglais)', v],
+    raw: (v) => ['Éditeur japonais', v],
+    bw: (v) => ['BookWalker', 'https://bookwalker.jp/' + v],
+    amz: (v) => ['Amazon', v],
+    ebj: (v) => ['eBookJapan', v],
+    cdj: (v) => ['CDJapan', v],
+  };
+  function officialLinks(l) {
+    const out = [];
+    for (const [k, f] of Object.entries(LINKS)) {
+      if (!l[k]) continue;
+      const [label, url] = f(l[k]);
+      if (/^https?:\/\//.test(url)) out.push({ label, url });
+    }
+    return out;
+  }
+
   function simplify(m, lang) {
     const a = m.attributes;
     let title = pick(a.title, [lang, 'fr', 'en', 'ja-ro', 'ja']);
@@ -107,6 +126,7 @@
       description: pick(a.description, [lang, 'fr', 'en']),
       status: a.status, year: a.year,
       languages: a.availableTranslatedLanguages || [],
+      links: officialLinks(a.links || {}),
       tags: (a.tags || []).map((t) => pick(t.attributes.name, [lang, 'en'])).slice(0, 8),
       author: author && author.attributes ? author.attributes.name : null,
       cover: cover && cover.attributes ? img(`${COVERS}/covers/${m.id}/${cover.attributes.fileName}.256.jpg`) : null,
@@ -240,13 +260,13 @@
 
   // Ouvre une page (chapitre d'un éditeur officiel) dans un navigateur intégré plein écran,
   // sans barre d'adresse : on reste dans l'app, un bouton « Fermer » ramène à la liste.
-  async function openExternal(url) {
+  async function openExternal(url, showURL = false) {
     if (!NATIVE || !(cap && cap.nativePromise)) { window.open(url, '_blank', 'noopener'); return; }
     try {
       await cap.nativePromise('InAppBrowser', 'openInWebView', {
         url,
         options: {
-          showURL: false, showToolbar: true, clearCache: false, clearSessionCache: false,
+          showURL, showToolbar: true, clearCache: false, clearSessionCache: false,
           mediaPlaybackRequiresUserAction: false, closeButtonText: 'Fermer', toolbarPosition: 0,
           showNavigationButtons: true, leftToRight: false, customWebViewUserAgent: null,
           android: { allowZoom: true, hardwareBack: true, pauseMedia: true },
@@ -258,5 +278,11 @@
     }
   }
 
-  window.MangaDex = { listManga, getManga, getPages, prefetchChapter, loadImage, openExternal, summary, NATIVE };
+  // Notifie chaque page chargée dans le navigateur intégré (pour reprendre où on s'était arrêté).
+  function onBrowse(cb) {
+    if (!NATIVE || !(cap && cap.addListener)) return;
+    try { cap.addListener('InAppBrowser', 'browserPageNavigationCompleted', (d) => d && d.url && cb(d.url)); } catch {}
+  }
+
+  window.MangaDex = { listManga, getManga, getPages, prefetchChapter, loadImage, openExternal, onBrowse, summary, NATIVE };
 })();

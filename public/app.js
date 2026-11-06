@@ -116,6 +116,8 @@ async function viewManga(id) {
             ${first ? `<a class="btn ${hist ? '' : 'primary'}" href="#/read/${id}/${first.id}">Commencer</a>` : ''}
             <button class="btn" id="fav">${isFav ? '★ Favori' : '☆ Favori'}</button>
           </div>
+          ${m.links && m.links.length ? `<div class="official"><span class="meta">Lire la série complète légalement :</span>
+            <div class="tabs">${m.links.map((l) => `<button class="tab" data-ext="${esc(l.url)}">${esc(l.label)} ↗</button>`).join('')}</div></div>` : ''}
           ${m.description ? `<div class="desc" id="desc">${esc(m.description)}</div>` : ''}
       <div class="chhead"><h2>${m.chapters ? m.chapters.length : '…'} chapitres <span class="meta">(${esc(lang.toUpperCase())})</span></h2>
         <div class="tabs" style="margin:0">${lang !== 'en' ? `<button class="tab ${fillOn() ? 'active' : ''}" id="fill" title="Compléter les chapitres manquants avec l'anglais">+EN</button>` : ''}
@@ -153,6 +155,74 @@ async function viewManga(id) {
   const firstReadable = m.chapters.find((c) => !c.external);
   const likely = (hist && hist.chapterId) || (firstReadable && firstReadable.id);
   if (likely) MangaDex.prefetchChapter(likely, saverOn());
+}
+
+// ---------- Onglet Web : navigateur intégré généraliste ----------
+// L'utilisateur navigue lui-même sur les sites de son choix ; l'app ne récupère pas leur contenu.
+const webFavs = () => store.get('webfavs', []);           // [{ title, url }]
+const webLast = () => store.get('weblast', {});          // host -> dernière URL visitée
+const webRecent = () => store.get('webrecent', []);      // [{ url, at }] (10 derniers)
+const hostOf = (u) => { try { return new URL(u).host; } catch { return ''; } };
+
+function toUrl(input) {
+  const t = input.trim();
+  if (!t) return null;
+  if (/^https?:\/\//i.test(t)) return t;
+  if (/^[\w-]+(\.[\w-]+)+(\/\S*)?$/.test(t)) return 'https://' + t; // ressemble à un domaine
+  return 'https://duckduckgo.com/?q=' + encodeURIComponent(t);
+}
+function browse(url, resume = true) {
+  const last = resume ? webLast()[hostOf(url)] : null;
+  MangaDex.openExternal(last || url, true);
+}
+MangaDex.onBrowse((url) => {
+  const host = hostOf(url);
+  if (!host || host.endsWith('duckduckgo.com')) return;
+  const l = webLast(); l[host] = url; store.set('weblast', l);
+  const r = webRecent().filter((x) => hostOf(x.url) !== host);
+  r.unshift({ url, at: Date.now() }); store.set('webrecent', r.slice(0, 10));
+});
+
+function viewWeb() {
+  document.title = 'Web — Manga-scan';
+  const render = () => {
+    const favs = webFavs(), recent = webRecent(), last = webLast();
+    $app.innerHTML = `
+      <h2>Web</h2>
+      <form id="wform" class="search"><input id="wq" type="search" inputmode="url" placeholder="Adresse d'un site ou recherche…" autocomplete="off"></form>
+      <h2>Mes sites</h2>
+      ${favs.length ? `<ul class="chapters">${favs.map((f, i) => `
+        <li><a href="#" data-open="${i}"><span class="name">${esc(f.title)}<br><small>${esc(hostOf(f.url))}${last[hostOf(f.url)] ? ' · reprise à la dernière page' : ''}</small></span>
+          <button class="btn" data-del="${i}" aria-label="Retirer">✕</button></a></li>`).join('')}</ul>`
+        : '<p class="meta">Aucun site enregistré. Ajoutez-en un ci-dessous.</p>'}
+      <form id="addf" class="addsite">
+        <input id="aname" placeholder="Nom (ex. : Mon site)" autocomplete="off">
+        <input id="aurl" placeholder="Adresse (ex. : exemple.com)" inputmode="url" autocomplete="off">
+        <button class="btn primary">Ajouter</button>
+      </form>
+      ${recent.length ? `<h2>Récents</h2><ul class="chapters">${recent.map((r) => `
+        <li><a href="#" data-url="${esc(r.url)}"><span class="name">${esc(hostOf(r.url))}<br><small>${esc(r.url.length > 60 ? r.url.slice(0, 60) + '…' : r.url)}</small></span>
+          <small>${new Date(r.at).toLocaleDateString('fr-FR')}</small></a></li>`).join('')}</ul>` : ''}`;
+    document.getElementById('wform').onsubmit = (e) => { e.preventDefault(); const u = toUrl(document.getElementById('wq').value); if (u) browse(u, false); };
+    document.getElementById('addf').onsubmit = (e) => {
+      e.preventDefault();
+      const url = toUrl(document.getElementById('aurl').value);
+      if (!url || url.includes('duckduckgo.com/?q=')) { document.getElementById('aurl').focus(); return; }
+      const title = document.getElementById('aname').value.trim() || hostOf(url);
+      store.set('webfavs', [...webFavs(), { title, url }]); render();
+    };
+    $app.querySelectorAll('[data-open]').forEach((a) => a.onclick = (e) => {
+      e.preventDefault();
+      if (e.target.closest('[data-del]')) return;
+      browse(webFavs()[+a.dataset.open].url);
+    });
+    $app.querySelectorAll('[data-del]').forEach((b) => b.onclick = (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const f = webFavs(); f.splice(+b.dataset.del, 1); store.set('webfavs', f); render();
+    });
+    $app.querySelectorAll('[data-url]').forEach((a) => a.onclick = (e) => { e.preventDefault(); MangaDex.openExternal(a.dataset.url, true); });
+  };
+  render();
 }
 
 // ---------- Lecteur ----------
@@ -288,6 +358,8 @@ function route() {
   const parts = location.hash.replace(/^#\/?/, '').split('/').map(decodeURIComponent);
   if (parts[0] === 'manga' && parts[1]) return viewManga(parts[1]);
   if (parts[0] === 'read' && parts[2]) return viewReader(parts[1], parts[2]);
+  document.getElementById('webbtn').classList.toggle('active', parts[0] === 'web');
+  if (parts[0] === 'web') { $q.value = ''; return viewWeb(); }
   if (parts[0] === 'search') { $q.value = parts[1] || ''; return viewHome(parts[1] || ''); }
   $q.value = '';
   return viewHome();
