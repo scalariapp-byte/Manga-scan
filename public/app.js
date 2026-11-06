@@ -202,7 +202,8 @@ function viewWeb() {
       </form>
       ${recent.length ? `<h2>Récents</h2><ul class="chapters">${recent.map((r) => `
         <li><a href="#" data-url="${esc(r.url)}"><span class="name">${esc(hostOf(r.url))}<br><small>${esc(r.url.length > 60 ? r.url.slice(0, 60) + '…' : r.url)}</small></span>
-          <small>${new Date(r.at).toLocaleDateString('fr-FR')}</small></a></li>`).join('')}</ul>` : ''}`;
+          <small>${new Date(r.at).toLocaleDateString('fr-FR')}</small></a></li>`).join('')}</ul>` : ''}
+      <p style="margin-top:28px;text-align:center"><a class="btn" href="#/diag">🩺 Diagnostic de l'app</a></p>`;
     document.getElementById('wform').onsubmit = (e) => { e.preventDefault(); const u = toUrl(document.getElementById('wq').value); if (u) browse(u, false); };
     document.getElementById('addf').onsubmit = (e) => {
       e.preventDefault();
@@ -223,6 +224,25 @@ function viewWeb() {
     $app.querySelectorAll('[data-url]').forEach((a) => a.onclick = (e) => { e.preventDefault(); MangaDex.openExternal(a.dataset.url, true); });
   };
   render();
+}
+
+// ---------- Diagnostic ----------
+async function viewDiag() {
+  document.title = 'Diagnostic — Manga-scan';
+  const ua = navigator.userAgent.match(/Android [\d.]+|Chrome\/[\d.]+/g) || [];
+  $app.innerHTML = `<h2>Diagnostic</h2>
+    <p class="meta">Teste chaque étape (connexion, couvertures, chapitres, pages) sur ce téléphone. Faites une capture d'écran du résultat.</p>
+    <ul class="chapters" id="diag"></ul>
+    <p class="meta" id="dsum" style="margin-top:12px">Test en cours…</p>
+    <p class="meta">Version : ${esc(ua.join(' · '))} · langue ${esc(lang.toUpperCase())}</p>`;
+  const ul = document.getElementById('diag');
+  let fails = 0;
+  await MangaDex.selfTest(lang, (r) => {
+    if (!r.ok) fails++;
+    ul.insertAdjacentHTML('beforeend', `<li><a><span class="name">${r.ok ? '✅' : '❌'} ${esc(r.name)}<br><small>${esc(r.info)}</small></span><small>${r.ms} ms</small></a></li>`);
+  });
+  const sum = document.getElementById('dsum');
+  if (sum) sum.innerHTML = fails ? `<b style="color:var(--accent)">${fails} problème(s)</b> : envoyez cette capture.` : '<b style="color:#4ade80">Tout fonctionne.</b>';
 }
 
 // ---------- Lecteur ----------
@@ -359,6 +379,7 @@ function route() {
   if (parts[0] === 'manga' && parts[1]) return viewManga(parts[1]);
   if (parts[0] === 'read' && parts[2]) return viewReader(parts[1], parts[2]);
   document.getElementById('webbtn').classList.toggle('active', parts[0] === 'web');
+  if (parts[0] === 'diag') return viewDiag();
   if (parts[0] === 'web') { $q.value = ''; return viewWeb(); }
   if (parts[0] === 'search') { $q.value = parts[1] || ''; return viewHome(parts[1] || ''); }
   $q.value = '';

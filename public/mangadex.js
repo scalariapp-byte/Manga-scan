@@ -284,5 +284,54 @@
     try { cap.addListener('InAppBrowser', 'browserPageNavigationCompleted', (d) => d && d.url && cb(d.url)); } catch {}
   }
 
-  window.MangaDex = { listManga, getManga, getPages, prefetchChapter, loadImage, openExternal, onBrowse, summary, NATIVE };
+  // ---- Autotest (écran Diagnostic) : vérifie chaque maillon sur l'appareil réel ----
+  async function selfTest(lang, report) {
+    const step = async (name, fn) => {
+      const t0 = performance.now();
+      try { const info = await fn(); report({ name, ok: true, ms: Math.round(performance.now() - t0), info: info || '' }); return true; }
+      catch (e) { report({ name, ok: false, ms: Math.round(performance.now() - t0), info: (e && e.message) || String(e) }); return false; }
+    };
+    const headers = (cap && cap.PluginHeaders) || [];
+    await step('Mode application Android', async () => { if (!NATIVE) throw new Error('non (mode navigateur web)'); return 'pont natif : ' + (cap && cap.nativePromise ? 'oui' : 'NON'); });
+    await step('Plugin navigateur intégré', async () => {
+      if (!NATIVE) return 'sans objet (web)';
+      const names = headers.map((h) => h.name);
+      if (!names.includes('InAppBrowser')) throw new Error('absent. Plugins : ' + names.join(', '));
+      return 'présent';
+    });
+    await step('Stockage local', async () => { localStorage.setItem('__t', '1'); if (localStorage.getItem('__t') !== '1') throw new Error('lecture impossible'); localStorage.removeItem('__t'); return 'ok'; });
+    let list = null;
+    const apiOk = await step('API MangaDex (liste)', async () => {
+      list = await get('/manga', [['limit', '5'], ['includes[]', 'cover_art'], ['availableTranslatedLanguage[]', lang], ['hasAvailableChapters', 'true'], ['order[followedCount]', 'desc']], 0, false, true);
+      return list.data.length + ' mangas reçus';
+    });
+    if (!apiOk) return;
+    const m = simplify(list.data[0], lang);
+    await step('Couverture « ' + m.title.slice(0, 30) + ' »', async () => {
+      if (!m.cover) throw new Error('pas de couverture');
+      const u = await loadImage(m.cover, true);
+      await new Promise((res, rej) => { const im = new Image(); im.onload = () => res(); im.onerror = () => rej(new Error('image illisible')); im.src = u; });
+      return 'affichable';
+    });
+    let chapterId = null;
+    await step('Chapitres en ' + lang.toUpperCase(), async () => {
+      const f = await get(`/manga/${m.id}/feed`, [['limit', '100'], ['translatedLanguage[]', lang], ['order[chapter]', 'desc']], 0, false, true);
+      const ok = f.data.filter((c) => !c.attributes.externalUrl && c.attributes.pages > 0);
+      const ext = f.data.filter((c) => c.attributes.externalUrl).length;
+      if (ok.length) chapterId = ok[0].id;
+      if (!f.data.length) throw new Error('aucun (total ' + f.total + ')');
+      return `${f.total} au total, ${ok.length} lisibles, ${ext} officiels (sur les 100 premiers)`;
+    });
+    if (!chapterId) return;
+    let pages = [];
+    await step('Serveur de pages (at-home)', async () => { pages = await getPages(chapterId, true); if (!pages.length) throw new Error('0 page'); return pages.length + ' pages'; });
+    if (!pages.length) return;
+    await step('Image d\'une page', async () => {
+      const u = await loadImage(pages[0], true);
+      const im = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error('image illisible')); i.src = u; });
+      return im.naturalWidth + '×' + im.naturalHeight + ' px';
+    });
+  }
+
+  window.MangaDex = { selfTest, listManga, getManga, getPages, prefetchChapter, loadImage, openExternal, onBrowse, summary, NATIVE };
 })();
