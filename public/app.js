@@ -23,9 +23,10 @@ function toggleFav(m) {
 // ---------- Utilitaires ----------
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const saverOn = () => store.get('saver', true); // pages allégées par défaut : 3 à 5 fois plus légères
+const LANGS = { fr: 'Français', en: 'Anglais', 'es-la': 'Espagnol', es: 'Espagnol (ES)', 'pt-br': 'Portugais', it: 'Italien', de: 'Allemand' };
 const STATUS = { ongoing: 'En cours', completed: 'Terminé', hiatus: 'En pause', cancelled: 'Annulé' };
 const chLabel = (c) => (c.chapter ? `Chapitre ${c.chapter}` : 'Oneshot') + (c.title ? ` — ${c.title}` : '');
-const coverImg = (src) => (src ? `<img loading="lazy" src="${esc(src)}" alt="" onload="this.classList.add('ok')">` : '');
+const coverImg = (src) => (src ? `<img data-src="${esc(src)}" alt="">` : '');
 const card = (m, sub = '', href = `#/manga/${m.id}`) => `
   <a class="card" href="${href}">
     <div class="cover">${coverImg(m.cover)}${sub ? `<span class="badge">${esc(sub)}</span>` : ''}</div>
@@ -93,13 +94,15 @@ async function viewManga(id) {
   const render = () => {
     document.title = m.title + ' — Manga-scan';
     const isFav = !!favs()[id];
-    const first = m.chapters && m.chapters[0];
+    const first = m.chapters && m.chapters.find((c) => !c.external);
     const list = !m.chapters ? [] : desc ? [...m.chapters].reverse() : m.chapters;
+    const nExt = m.chapters ? m.chapters.filter((c) => c.external).length : 0;
+    const otherLangs = (m.languages || []).filter((l) => l !== lang && LANGS[l]);
     $app.innerHTML = `
       <div class="hero">
-        ${m.cover ? `<div class="bg" style="background-image:url('${esc(m.cover)}')"></div>` : ''}
+        ${m.cover ? `<img class="bg" data-src="${esc(m.cover)}" data-eager="1" alt="">` : ''}
         <div class="detail">
-          <div>${m.cover ? `<img class="cover" src="${esc(m.cover)}" alt="">` : ''}</div>
+          <div>${m.cover ? `<img class="cover" data-src="${esc(m.cover)}" data-eager="1" alt="">` : ''}</div>
           <div>
             <h1>${esc(m.title)}</h1>
             <div class="meta">${[m.author, m.year, STATUS[m.status] || m.status].filter(Boolean).map(esc).join(' · ')}</div>
@@ -116,11 +119,14 @@ async function viewManga(id) {
       <div class="chhead"><h2>${m.chapters ? m.chapters.length : '…'} chapitres <span class="meta">(${esc(lang.toUpperCase())})</span></h2>
         <button class="btn" id="order">${desc ? '↓ Récents' : '↑ Anciens'}</button></div>
       ${!m.chapters ? `<ul class="chapters">${'<li class="skel"><a><span class="t" style="width:40%"></span></a></li>'.repeat(8)}</ul>` : m.chapters.length ? `<ul class="chapters">${list.map((c) => `
-        <li><a href="#/read/${id}/${c.id}" class="${read[c.id] ? 'read' : ''}">
-          <span class="name">${esc(chLabel(c))}</span>
+        <li><a href="${c.external ? esc(c.external) : `#/read/${id}/${c.id}`}" ${c.external ? `target="${MangaDex.NATIVE ? '_self' : '_blank'}" rel="noopener"` : ''} class="${read[c.id] ? 'read' : ''}">
+          <span class="name">${esc(chLabel(c))}${c.external ? ' <span class="ext">↗ Site officiel</span>' : ''}</span>
           <small>${c.volume ? `Vol. ${esc(c.volume)}<br>` : ''}${c.publishedAt ? new Date(c.publishedAt).toLocaleDateString('fr-FR') : ''}</small>
         </a></li>`).join('')}</ul>`
-      : `<div class="err"><b>Aucun chapitre lisible en ${esc(lang.toUpperCase())}</b>Les chapitres de ce manga sont peut-être publiés par un éditeur officiel (non lisibles ici). Essayez une autre langue en haut à droite.</div>`}`;
+      : `<div class="err"><b>Aucun chapitre en ${esc(LANGS[lang] || lang)} sur MangaDex</b>${otherLangs.length ? 'Disponible en :' : 'Ce manga a probablement été retiré de MangaDex (licence).'}
+          ${otherLangs.length ? `<div class="actions" style="justify-content:center">${otherLangs.map((l) => `<button class="btn" data-lang="${l}">${esc(LANGS[l])}</button>`).join('')}</div>` : ''}</div>`}
+      ${nExt && nExt === m.chapters.length ? `<p class="meta" style="margin-top:12px">Ces chapitres sont publiés gratuitement par l'éditeur officiel : ils s'ouvrent sur son site.</p>` : ''}`;
+    $app.querySelectorAll('[data-lang]').forEach((b) => b.onclick = () => { lang = b.dataset.lang; $lang.value = lang; store.set('lang', lang); route(); });
     document.getElementById('fav').onclick = () => { toggleFav(m); render(); };
     document.getElementById('order').onclick = () => { desc = !desc; render(); };
     const d = document.getElementById('desc'); if (d) d.onclick = () => d.classList.toggle('open');
@@ -132,8 +138,15 @@ async function viewManga(id) {
   if (location.hash !== here) return; // l'utilisateur est parti entre-temps
   m = full;
   render();
+  // Si la liste venait du cache, on vérifie en arrière-plan s'il y a de nouveaux chapitres.
+  MangaDex.getManga(id, lang, true).then((fresh) => {
+    if (location.hash !== here || fresh.chapters.length === m.chapters.length) return;
+    mangaCache.set(id + ':' + lang, Promise.resolve(fresh));
+    m = fresh; render();
+  }).catch(() => {});
   // Le chapitre le plus probable (reprise ou premier) est préchargé pour une ouverture instantanée.
-  const likely = (hist && hist.chapterId) || (m.chapters[0] && m.chapters[0].id);
+  const firstReadable = m.chapters.find((c) => !c.external);
+  const likely = (hist && hist.chapterId) || (firstReadable && firstReadable.id);
   if (likely) MangaDex.prefetchChapter(likely, saverOn());
 }
 
@@ -146,9 +159,10 @@ async function viewReader(mangaId, chapterId) {
   try {
     [m, pages] = await Promise.all([getManga(mangaId), MangaDex.getPages(chapterId, saverOn())]);
   } catch (e) { $app.innerHTML = errorBox(e) + '<p class="msg"><a class="btn" href="#/manga/' + esc(mangaId) + '">Retour</a></p>'; return; }
-  const idx = m.chapters.findIndex((c) => c.id === chapterId);
-  const ch = m.chapters[idx] || { id: chapterId, chapter: null };
-  const prev = m.chapters[idx - 1], next = m.chapters[idx + 1];
+  const chs = m.chapters.filter((c) => !c.external);
+  const idx = chs.findIndex((c) => c.id === chapterId);
+  const ch = chs[idx] || { id: chapterId, chapter: null };
+  const prev = chs[idx - 1], next = chs[idx + 1];
   document.title = `${m.title} — ${chLabel(ch)}`;
   let mode = store.get('mode', 'vertical');
   const h = history();
@@ -167,7 +181,7 @@ async function viewReader(mangaId, chapterId) {
     <div class="rbar" id="rbar">
       <a class="btn" href="#/manga/${mangaId}" title="Retour">←</a>
       <div class="ttl"><b>${esc(m.title)}</b>
-      <select id="chsel">${m.chapters.map((c) => `<option value="${c.id}" ${c.id === chapterId ? 'selected' : ''}>${esc(chLabel(c))}</option>`).join('')}</select></div>
+      <select id="chsel">${chs.map((c) => `<option value="${c.id}" ${c.id === chapterId ? 'selected' : ''}>${esc(chLabel(c))}</option>`).join('')}</select></div>
       <button class="btn" id="hd" title="Qualité des images">${saverOn() ? 'SD' : 'HD'}</button>
       <button class="btn" id="mode" title="Mode de lecture">${mode === 'vertical' ? '⇕' : '⇔'}</button>
     </div>${body}`;
@@ -179,9 +193,8 @@ async function viewReader(mangaId, chapterId) {
   const render = () => {
     cleanups.forEach((f) => f()); cleanups = [];
     if (mode === 'vertical') {
-      $app.innerHTML = shell(`<div class="pages">${pages.map((src, i) => `<img data-i="${i}" src="${esc(src)}" loading="${i < 3 ? 'eager' : 'lazy'}" alt="Page ${i + 1}">`).join('')}</div>${endnav}<div class="counter" id="counter"></div>`);
+      $app.innerHTML = shell(`<div class="pages">${pages.map((src, i) => `<img data-i="${i}" data-src="${esc(src)}" ${i < 3 ? 'data-eager="1"' : ''} alt="Page ${i + 1}">`).join('')}</div>${endnav}<div class="counter" id="counter"></div>`);
       const imgs = [...$app.querySelectorAll('.pages img')];
-      imgs.forEach((im) => { im.onload = () => im.classList.add('loaded'); im.onerror = () => retryImg(im); });
       const counter = document.getElementById('counter');
       let current = startPage;
       const obs = new IntersectionObserver((ents) => {
@@ -202,9 +215,9 @@ async function viewReader(mangaId, chapterId) {
       $app.innerHTML = shell(`<div class="paged" id="paged"><img id="pimg" alt=""></div><div class="counter" id="counter"></div>`);
       const img = document.getElementById('pimg'), counter = document.getElementById('counter');
       const show = () => {
-        img.src = pages[page]; img.onerror = () => retryImg(img);
+        img.removeAttribute('src'); img.dataset.src = pages[page]; setSrc(img, true);
         counter.textContent = `${page + 1} / ${pages.length}`; save(page);
-        [1, 2].forEach((k) => { if (pages[page + k]) new Image().src = pages[page + k]; }); // préchargement
+        [1, 2, 3].forEach((k) => { if (pages[page + k]) MangaDex.loadImage(pages[page + k]).catch(() => {}); }); // préchargement
       };
       const step = (d) => {
         const p = page + d;
@@ -234,12 +247,33 @@ async function viewReader(mangaId, chapterId) {
   readerCleanup = () => { clearTimeout(pre); cleanups.forEach((f) => f()); };
 }
 
-// Les serveurs d'images MangaDex@Home tombent parfois : on réessaie une fois avec un délai.
-function retryImg(img) {
-  if (img.dataset.retry) return;
-  img.dataset.retry = '1';
-  setTimeout(() => { img.src = img.src + (img.src.includes('?') ? '&' : '?') + 'r=1'; }, 1500);
+// ---------- Chargement des images ----------
+// Toutes les images portent data-src ; elles sont chargées (via MangaDex.loadImage) à l'approche de l'écran.
+function setSrc(im, urgent) {
+  const want = im.dataset.src;
+  MangaDex.loadImage(want, urgent).then((u) => {
+    if (im.dataset.src !== want) return; // l'image a changé entre-temps (mode page par page)
+    im.onload = () => im.classList.add('ok', 'loaded');
+    im.onerror = () => retryImg(im);
+    im.src = u;
+  }).catch(() => retryImg(im));
 }
+// Les serveurs d'images MangaDex@Home tombent parfois : on réessaie une fois avec un délai.
+function retryImg(im) {
+  if (im.dataset.retry) { im.classList.add('fail'); return; }
+  im.dataset.retry = '1';
+  setTimeout(() => setSrc(im, true), 1500);
+}
+const imgObs = new IntersectionObserver((entries) => {
+  for (const e of entries) if (e.isIntersecting) { imgObs.unobserve(e.target); setSrc(e.target, false); }
+}, { rootMargin: '1200px 0px' });
+function hydrate() {
+  $app.querySelectorAll('img[data-src]:not([data-h])').forEach((im) => {
+    im.dataset.h = '1';
+    if (im.dataset.eager) setSrc(im, true); else imgObs.observe(im);
+  });
+}
+new MutationObserver(hydrate).observe($app, { childList: true, subtree: true });
 
 // ---------- Routage ----------
 function route() {
