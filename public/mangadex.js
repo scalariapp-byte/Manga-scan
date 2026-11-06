@@ -133,20 +133,58 @@
     };
   }
 
-  async function listManga({ lang, q, sort, offset = 0 }) {
-    const p = [['limit', '24'], ['offset', String(offset)], ['includes[]', 'cover_art'], ['includes[]', 'author'], ['hasAvailableChapters', 'true']];
-    // La recherche couvre toutes les langues (la fiche propose ensuite les langues disponibles) ;
-    // les listes de découverte, elles, ne montrent que ce qui est lisible dans la langue choisie.
-    if (!q) p.push(['availableTranslatedLanguage[]', lang]);
+  // Mangas ayant des chapitres réellement LISIBLES dans `lang` (hébergés sur MangaDex, pas de lien externe),
+  // tirés des 300 derniers chapitres publiés. Le champ « langues disponibles » des fiches compte aussi
+  // les liens d'éditeurs et ne suffit donc pas : les mangas les plus suivis n'ont souvent rien de lisible.
+  async function readablePool(lang) {
+    const page = (offset) => {
+      const p = [['limit', '100'], ['offset', String(offset)], ['translatedLanguage[]', lang], ['includeExternalUrl', '0'], ['includeEmptyPages', '0'], ['order[readableAt]', 'desc']];
+      for (const r of RATINGS) p.push(['contentRating[]', r]);
+      return get('/chapter', p);
+    };
+    const pages = await Promise.all([0, 100, 200].map((o) => page(o).catch(() => ({ data: [] }))));
+    const ids = [];
+    for (const pg of pages) for (const c of pg.data) {
+      if (c.attributes.externalUrl || c.attributes.pages === 0) continue;
+      const m = (c.relationships || []).find((r) => r.type === 'manga');
+      if (m && !ids.includes(m.id)) ids.push(m.id);
+    }
+    return ids.slice(0, 100); // l'API accepte 100 ids par requête
+  }
+
+  async function mangasByIds(ids, lang, order, offset) {
+    const p = [['limit', '24'], ['offset', String(offset)], ['includes[]', 'cover_art'], ['includes[]', 'author']];
+    for (const id of ids) p.push(['ids[]', id]);
     for (const r of RATINGS) p.push(['contentRating[]', r]);
-    if (q) p.push(['title', q.slice(0, 100)], ['order[relevance]', 'desc']);
-    else if (sort === 'latest') p.push(['order[latestUploadedChapter]', 'desc']);
-    else if (sort === 'rating') p.push(['order[rating]', 'desc']);
-    else p.push(['order[followedCount]', 'desc']);
+    if (order) p.push([`order[${order}]`, 'desc']);
     const data = await get('/manga', p);
-    const items = data.data.map((m) => simplify(m, lang));
+    return data.data;
+  }
+
+  async function listManga({ lang, q, sort, offset = 0 }) {
+    let raw, total;
+    if (q) {
+      // La recherche couvre toutes les langues (la fiche propose ensuite les langues disponibles).
+      const p = [['limit', '24'], ['offset', String(offset)], ['includes[]', 'cover_art'], ['includes[]', 'author'], ['title', q.slice(0, 100)], ['order[relevance]', 'desc']];
+      for (const r of RATINGS) p.push(['contentRating[]', r]);
+      const data = await get('/manga', p);
+      raw = data.data; total = data.total;
+    } else {
+      const ids = await readablePool(lang);
+      total = ids.length;
+      if (!ids.length) return { total: 0, items: [] };
+      if (sort === 'latest') {
+        const slice = ids.slice(offset, offset + 24);
+        if (!slice.length) return { total, items: [] };
+        const got = await mangasByIds(slice, lang, null, 0);
+        raw = slice.map((id) => got.find((m) => m.id === id)).filter(Boolean); // ordre : dernier chapitre publié
+      } else {
+        raw = await mangasByIds(ids, lang, sort === 'rating' ? 'rating' : 'followedCount', offset);
+      }
+    }
+    const items = raw.map((m) => simplify(m, lang));
     items.forEach((m) => known.set(m.id, m));
-    return { total: data.total, items };
+    return { total, items };
   }
 
   const known = new Map(); // résumés déjà vus dans les listes : affichage immédiat de la fiche
@@ -278,12 +316,6 @@
     }
   }
 
-  // Notifie chaque page chargée dans le navigateur intégré (pour reprendre où on s'était arrêté).
-  function onBrowse(cb) {
-    if (!NATIVE || !(cap && cap.addListener)) return;
-    try { cap.addListener('InAppBrowser', 'browserPageNavigationCompleted', (d) => d && d.url && cb(d.url)); } catch {}
-  }
-
   // ---- Autotest (écran Diagnostic) : vérifie chaque maillon sur l'appareil réel ----
   async function selfTest(lang, report) {
     const step = async (name, fn) => {
@@ -302,8 +334,10 @@
     await step('Stockage local', async () => { localStorage.setItem('__t', '1'); if (localStorage.getItem('__t') !== '1') throw new Error('lecture impossible'); localStorage.removeItem('__t'); return 'ok'; });
     let list = null;
     const apiOk = await step('API MangaDex (liste)', async () => {
-      list = await get('/manga', [['limit', '5'], ['includes[]', 'cover_art'], ['availableTranslatedLanguage[]', lang], ['hasAvailableChapters', 'true'], ['order[followedCount]', 'desc']], 0, false, true);
-      return list.data.length + ' mangas reçus';
+      const ids = await readablePool(lang);
+      if (!ids.length) throw new Error('aucun chapitre lisible récent en ' + lang.toUpperCase());
+      list = { data: await mangasByIds(ids.slice(0, 5), lang, null, 0) };
+      return ids.length + ' mangas avec chapitres lisibles en ' + lang.toUpperCase();
     });
     if (!apiOk) return;
     const m = simplify(list.data[0], lang);
@@ -333,5 +367,5 @@
     });
   }
 
-  window.MangaDex = { selfTest, listManga, getManga, getPages, prefetchChapter, loadImage, openExternal, onBrowse, summary, NATIVE };
+  window.MangaDex = { selfTest, listManga, getManga, getPages, prefetchChapter, loadImage, openExternal, summary, NATIVE };
 })();

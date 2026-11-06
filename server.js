@@ -36,7 +36,7 @@ async function apiGet(pathAndQuery, ttlMs = 5 * 60 * 1000) {
 }
 
 // Seules ces routes de l'API MangaDex sont relayées.
-const ALLOWED = [/^\/manga$/, /^\/manga\/[0-9a-f-]{36}$/i, /^\/manga\/[0-9a-f-]{36}\/feed$/i, /^\/at-home\/server\/[0-9a-f-]{36}$/i];
+const ALLOWED = [/^\/chapter$/, /^\/manga$/, /^\/manga\/[0-9a-f-]{36}$/i, /^\/manga\/[0-9a-f-]{36}\/feed$/i, /^\/at-home\/server\/[0-9a-f-]{36}$/i];
 
 async function proxyApi(url, res) {
   const sub = url.pathname.slice('/mdx'.length);

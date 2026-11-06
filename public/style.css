@@ -145,6 +145,5 @@ img.fail { min-height: 0 !important; }
 .addsite input:focus { border-color: var(--accent); }
 .chapters li a .btn { height: 32px; padding: 0 12px; flex: none; }
 @media (max-width: 640px) {
-  .topbar { grid-template-columns: 1fr auto auto; }
   .addsite { grid-template-columns: 1fr; }
 }
